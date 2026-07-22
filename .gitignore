@@ -3,10 +3,13 @@ build-dev/
 build-prod/
 .cache/
 .docs/
+.vscode/
 compile_commands.json
 __pycache__/
 *.pyc
 *.pyo
+Testing/
+data/*.jsonl
 
 # Local docker-compose environment overrides (copied from .env.example).
 # Never commit - contains deployment-specific URLs / API tokens.

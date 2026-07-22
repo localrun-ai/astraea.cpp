@@ -69,7 +69,7 @@ drogon::HttpResponsePtr sse_hello_response() {
                     stream->close();
                 });
         });
-    resp->addHeader("Content-Type",  "text/event-stream");
+    resp->setContentTypeCodeAndCustomString(drogon::CT_CUSTOM, "text/event-stream");
     resp->addHeader("Cache-Control", "no-cache");
     resp->addHeader("X-Accel-Buffering", "no"); // disable nginx response buffering
     return resp;

@@ -1,0 +1,26 @@
+name            = "tenancy-gateway"
+main            = "worker.js"
+compatibility_date = "2025-06-01"
+
+# Route: intercept every request to tenancy.localrun.ai before it reaches
+# the Cloudflare Tunnel. The Worker proxies through on success; on any 5xx
+# or network failure it returns a branded maintenance page instead.
+#
+# zone_name must match the zone that owns the tenancy.localrun.ai hostname.
+# Run `wrangler whoami` to verify your account, then `wrangler deploy`.
+routes = [
+  { pattern = "tenancy.localrun.ai/*", zone_name = "localrun.ai" }
+]
+
+# ALLOWED_ORIGIN mirrors the value set in the nz_tenancy service environment.
+# Set it here so error responses carry the same CORS header the origin would
+# have sent, preventing the browser from swallowing 503s as CORS errors.
+#
+# To override per environment, add an [env.production] block below with its
+# own [env.production.vars] section.
+[vars]
+ALLOWED_ORIGIN = "https://tenancy.localrun.ai"
+
+# Uncomment to pin the Worker to Cloudflare's EU region (GDPR).
+# [placement]
+# mode = "smart"
