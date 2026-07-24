@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- background -->
+  <rect width="32" height="32" rx="6" fill="#1a1a2e"/>
+
+  <!-- center pole -->
+  <rect x="15.2" y="7" width="1.6" height="19" fill="#d4a830" rx="0.8"/>
+
+  <!-- horizontal beam -->
+  <rect x="6.5" y="10" width="19" height="2" fill="#d4a830" rx="1"/>
+
+  <!-- top knob -->
+  <circle cx="16" cy="7.5" r="1.6" fill="#d4a830"/>
+
+  <!-- left pan chains -->
+  <rect x="8.5" y="12" width="1.1" height="4.5" fill="#d4a830" rx="0.5"/>
+  <rect x="12.4" y="12" width="1.1" height="4.5" fill="#d4a830" rx="0.5"/>
+
+  <!-- left pan bowl -->
+  <path d="M7.8 16.5 Q11 22 14.2 16.5" stroke="#d4a830" stroke-width="1.6"
+        fill="none" stroke-linecap="round"/>
+
+  <!-- right pan chains -->
+  <rect x="18.4" y="12" width="1.1" height="4.5" fill="#d4a830" rx="0.5"/>
+  <rect x="22.3" y="12" width="1.1" height="4.5" fill="#d4a830" rx="0.5"/>
+
+  <!-- right pan bowl (slightly lower - unbalanced, natural look) -->
+  <path d="M17.7 17.5 Q21 23 24.1 17.5" stroke="#d4a830" stroke-width="1.6"
+        fill="none" stroke-linecap="round"/>
+
+  <!-- base platform -->
+  <rect x="13" y="25.5" width="6" height="1.8" fill="#d4a830" rx="0.9"/>
+</svg>

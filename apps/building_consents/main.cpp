@@ -26,6 +26,7 @@
 #include <drogon/HttpResponse.h>
 #include <mimalloc.h>
 #include <glaze/glaze.hpp>
+#include <json/json.h>
 #include <spdlog/spdlog.h>
 
 #include "astraea/anchor.hpp"
@@ -46,7 +47,11 @@
 #include "astraea/session.hpp"
 #include "astraea/retriever.hpp"
 #include "astraea/sanitize.hpp"
+#if defined(ASTRAEA_NZ_LEGAL_APP)
+#include "nz_legal/jurisdiction.hpp"
+#else
 #include "building_consents/jurisdiction.hpp"
+#endif
 #include "astraea/geocode_client.hpp"
 
 #include <openssl/crypto.h>
@@ -64,6 +69,7 @@
 #include <mutex>
 #include <optional>
 #include <map>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -692,6 +698,379 @@ drogon::Task<drogon::HttpResponsePtr> healthz_handler(
         : drogon::k503ServiceUnavailable;
     co_return json_response(code, std::move(body));
 }
+
+#if defined(ASTRAEA_NZ_LEGAL_APP)
+Json::Value parse_json_body(const drogon::HttpRequestPtr& req) {
+    Json::Value root;
+    Json::CharReaderBuilder builder;
+    std::string errs;
+    const auto body = req->body();
+    std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+    if (!reader->parse(body.data(), body.data() + body.size(), &root, &errs))
+        throw std::runtime_error("Invalid JSON");
+    if (!root.isObject()) return Json::Value(Json::objectValue);
+    return root;
+}
+
+std::string json_to_string(const Json::Value& v) {
+    Json::StreamWriterBuilder b;
+    b["indentation"] = "";
+    return Json::writeString(b, v);
+}
+
+Json::Value match_value(const std::string& key, const Json::Value& value) {
+    Json::Value c(Json::objectValue);
+    c["key"] = key;
+    c["match"]["value"] = value;
+    return c;
+}
+
+Json::Value match_any(const std::string& key, const Json::Value& values) {
+    Json::Value c(Json::objectValue);
+    c["key"] = key;
+    c["match"]["any"] = values;
+    return c;
+}
+
+Json::Value range_cond(const std::string& key, double gte, double lte) {
+    Json::Value c(Json::objectValue);
+    c["key"] = key;
+    c["range"]["gte"] = gte;
+    c["range"]["lte"] = lte;
+    return c;
+}
+
+void add_year_filter(Json::Value& must, const Json::Value& req) {
+    if (req.isMember("year_from") || req.isMember("year_to")) {
+        const double from = req.isMember("year_from") && !req["year_from"].isNull()
+            ? req["year_from"].asDouble() : 1900.0;
+        const double to = req.isMember("year_to") && !req["year_to"].isNull()
+            ? req["year_to"].asDouble() : 2100.0;
+        must.append(range_cond("year", from, to));
+    }
+}
+
+void add_court_filter(Json::Value& must, const Json::Value& req) {
+    if (req.isMember("courts") && req["courts"].isArray() && !req["courts"].empty())
+        must.append(match_any("court", req["courts"]));
+}
+
+void add_string_match(Json::Value& must, const Json::Value& req,
+                      const char* req_key, const char* qdrant_key) {
+    if (req.isMember(req_key) && req[req_key].isString() && !req[req_key].asString().empty())
+        must.append(match_value(qdrant_key, req[req_key]));
+}
+
+void add_bool_match(Json::Value& must, const Json::Value& req,
+                    const char* req_key, const char* qdrant_key) {
+    if (req.isMember(req_key) && req[req_key].isBool())
+        must.append(match_value(qdrant_key, req[req_key]));
+}
+
+void add_range(Json::Value& must, const Json::Value& req,
+               const char* min_key, const char* max_key, const char* qdrant_key,
+               double default_min, double default_max) {
+    const bool has_min = req.isMember(min_key) && !req[min_key].isNull();
+    const bool has_max = req.isMember(max_key) && !req[max_key].isNull();
+    if (has_min || has_max) {
+        must.append(range_cond(
+            qdrant_key,
+            has_min ? req[min_key].asDouble() : default_min,
+            has_max ? req[max_key].asDouble() : default_max));
+    }
+}
+
+void add_should_matches(Json::Value& should, const Json::Value& req,
+                        const char* req_key, const char* qdrant_key) {
+    if (!req.isMember(req_key) || !req[req_key].isArray()) return;
+    for (const auto& v : req[req_key])
+        if (!v.isNull()) should.append(match_value(qdrant_key, v));
+}
+
+int capped_limit(const Json::Value& req, int def = 30) {
+    int lim = def;
+    if (req.isMember("limit") && req["limit"].isInt()) lim = req["limit"].asInt();
+    if (lim < 1) lim = 1;
+    if (lim > 100) lim = 100;
+    return lim;
+}
+
+Json::Value payload_or_empty(const Json::Value& payload, const char* key, Json::ValueType type) {
+    if (payload.isMember(key) && !payload[key].isNull()) return payload[key];
+    return Json::Value(type);
+}
+
+double nested_number(const Json::Value& p, const char* obj, const char* key, double def = 0.0) {
+    if (!p.isMember(obj) || !p[obj].isObject()) return def;
+    const auto& v = p[obj][key];
+    return v.isNumeric() ? v.asDouble() : def;
+}
+
+double notable_weight(const Json::Value& payload) {
+    return nested_number(payload, "penalty", "outcome_osi") * 1000.0
+        + nested_number(payload, "penalty", "awarded_amount") / 1000000.0;
+}
+
+int sentencing_completeness(const Json::Value& payload) {
+    static constexpr const char* keys[] = {
+        "starting_point_months", "final_sentence_months", "home_detention_months",
+        "community_work_hours", "guilty_plea_discount_pct",
+    };
+    if (!payload.isMember("sentencing") || !payload["sentencing"].isObject()) return 0;
+    int n = 0;
+    for (const char* k : keys)
+        if (payload["sentencing"].isMember(k) && !payload["sentencing"][k].isNull()) ++n;
+    return n;
+}
+
+int pg_completeness(const Json::Value& payload) {
+    if (!payload.isMember("pg") || !payload["pg"].isObject()) return 0;
+    const auto& pg = payload["pg"];
+    int n = pg.isMember("grievance_types") && pg["grievance_types"].isArray()
+        ? static_cast<int>(pg["grievance_types"].size()) : 0;
+    if (pg.isMember("reinstatement_ordered") && !pg["reinstatement_ordered"].isNull()) n += 2;
+    if (pg.isMember("contributory_conduct_pct") && !pg["contributory_conduct_pct"].isNull()) n += 1;
+    return n;
+}
+
+Json::Value tracker_result(const Json::Value& payload, const char* extra_key) {
+    Json::Value out(Json::objectValue);
+    out["case_id"]    = payload.get("case_id", "").asString();
+    out["title"]      = payload.get("title", payload.get("case_id", "")).asString();
+    out["court_name"] = payload.get("court_name", "").asString();
+    out["date"]       = payload.get("date", "").asString();
+    out["url"]        = payload.get("url", "").asString();
+    out["flags"]      = payload_or_empty(payload, "flags", Json::arrayValue);
+    out["penalty"]    = payload_or_empty(payload, "penalty", Json::objectValue);
+    out["counsel"]    = payload_or_empty(payload, "counsel", Json::objectValue);
+    if (extra_key)
+        out[extra_key] = payload_or_empty(payload, extra_key, Json::objectValue);
+    return out;
+}
+
+drogon::Task<Json::Value> qdrant_scroll_json(
+    const std::string& qdrant_url,
+    const std::string& collection,
+    Json::Value filter,
+    int limit)
+{
+    Json::Value body(Json::objectValue);
+    body["limit"] = limit;
+    body["with_payload"] = true;
+    body["with_vector"] = false;
+    if (!filter.isNull()) body["filter"] = std::move(filter);
+
+    auto client = drogon::HttpClient::newHttpClient(qdrant_url);
+    auto req = drogon::HttpRequest::newHttpJsonRequest(Json::Value{});
+    req->setMethod(drogon::Post);
+    req->setPath("/collections/" + collection + "/points/scroll");
+    req->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+    req->setBody(json_to_string(body));
+    auto resp = co_await client->sendRequestCoro(req, 30.0);
+    if (static_cast<int>(resp->statusCode()) != 200)
+        throw std::runtime_error("qdrant scroll HTTP " + std::to_string(static_cast<int>(resp->statusCode())));
+
+    Json::Value parsed;
+    Json::CharReaderBuilder builder;
+    std::string errs;
+    std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+    const auto rbody = resp->body();
+    if (!reader->parse(rbody.data(), rbody.data() + rbody.size(), &parsed, &errs))
+        throw std::runtime_error("qdrant scroll parse failed");
+    co_return parsed["result"]["points"];
+}
+
+Json::Value make_filter(Json::Value must, Json::Value should) {
+    Json::Value filter(Json::objectValue);
+    if (!must.empty()) filter["must"] = std::move(must);
+    if (!should.empty()) filter["should"] = std::move(should);
+    return filter.empty() ? Json::Value{} : filter;
+}
+
+drogon::Task<drogon::HttpResponsePtr> nz_legal_notable_handler(
+    const drogon::HttpRequestPtr& req,
+    const astraea::Config& cfg,
+    const astraea::JurisdictionBase& jurisdiction)
+{
+    try {
+        const Json::Value in = parse_json_body(req);
+        Json::Value must(Json::arrayValue), should(Json::arrayValue);
+        add_court_filter(must, in);
+        add_year_filter(must, in);
+        add_range(must, in, "min_osi", "max_osi", "penalty.outcome_osi", 0.0, 1.0);
+        add_range(must, in, "min_recovery", "max_recovery", "penalty.recovery_rate", 0.0, 99999.0);
+        add_range(must, in, "min_awarded", "max_awarded", "penalty.awarded_amount", 0.0, 999999999.0);
+        add_should_matches(should, in, "flags", "flags");
+        add_string_match(must, in, "counsel_surname", "counsel.all_surnames");
+        add_string_match(must, in, "crown_counsel", "counsel.crown");
+
+        const int lim = capped_limit(in);
+        auto points = co_await qdrant_scroll_json(
+            cfg.qdrant_url, jurisdiction.corpus().qdrant_collection,
+            make_filter(std::move(must), std::move(should)), lim * 4);
+
+        std::unordered_map<std::string, Json::Value> seen;
+        for (const auto& pt : points) {
+            const auto& p = pt["payload"];
+            const std::string cid = p.get("case_id", "").asString();
+            if (cid.empty()) continue;
+            if (!seen.contains(cid) || notable_weight(p) > notable_weight(seen[cid]))
+                seen[cid] = p;
+        }
+        std::vector<Json::Value> ordered;
+        ordered.reserve(seen.size());
+        for (auto& [_, p] : seen) ordered.push_back(std::move(p));
+        std::sort(ordered.begin(), ordered.end(), [](const Json::Value& a, const Json::Value& b) {
+            return notable_weight(a) > notable_weight(b);
+        });
+        Json::Value out(Json::arrayValue);
+        for (int i = 0; i < static_cast<int>(ordered.size()) && i < lim; ++i)
+            out.append(tracker_result(ordered[i], nullptr));
+        co_return json_response(drogon::k200OK, json_to_string(out));
+    } catch (const std::exception& e) {
+        co_return text_response(drogon::k500InternalServerError, std::string(e.what()) + "\n");
+    }
+}
+
+drogon::Task<drogon::HttpResponsePtr> nz_legal_sentencing_handler(
+    const drogon::HttpRequestPtr& req,
+    const astraea::Config& cfg,
+    const astraea::JurisdictionBase& jurisdiction)
+{
+    try {
+        const Json::Value in = parse_json_body(req);
+        Json::Value must(Json::arrayValue), should(Json::arrayValue);
+        must.append(match_value("sentencing.has_data", Json::Value(true)));
+        add_court_filter(must, in);
+        add_year_filter(must, in);
+        add_string_match(must, in, "sentence_type", "sentencing.sentence_type");
+        add_range(must, in, "min_starting_point", "max_starting_point",
+                  "sentencing.starting_point_months", 0.0, 9999.0);
+        add_range(must, in, "min_final_sentence", "max_final_sentence",
+                  "sentencing.final_sentence_months", 0.0, 9999.0);
+        add_bool_match(must, in, "has_guilty_plea", "sentencing.has_guilty_plea");
+        add_should_matches(should, in, "flags", "flags");
+
+        const int lim = capped_limit(in);
+        auto points = co_await qdrant_scroll_json(
+            cfg.qdrant_url, jurisdiction.corpus().qdrant_collection,
+            make_filter(std::move(must), std::move(should)), lim * 6);
+
+        std::unordered_map<std::string, Json::Value> best;
+        std::unordered_map<std::string, Json::Value> merged;
+        for (const auto& pt : points) {
+            const auto& p = pt["payload"];
+            const std::string cid = p.get("case_id", "").asString();
+            if (cid.empty()) continue;
+            if (!best.contains(cid)) {
+                best[cid] = p;
+                merged[cid] = Json::Value(Json::objectValue);
+            } else if (sentencing_completeness(p) > sentencing_completeness(best[cid])) {
+                best[cid] = p;
+            }
+            const auto& s = p["sentencing"];
+            if (s.isObject()) {
+                for (const auto& k : s.getMemberNames()) {
+                    if (k == "has_data") continue;
+                    if (!merged[cid].isMember(k) || merged[cid][k].isNull())
+                        if (!s[k].isNull()) merged[cid][k] = s[k];
+                }
+            }
+        }
+        std::vector<Json::Value> ordered;
+        for (auto& [cid, p] : best) {
+            p["sentencing"] = merged[cid];
+            p["sentencing"]["has_data"] = true;
+            ordered.push_back(std::move(p));
+        }
+        std::sort(ordered.begin(), ordered.end(), [](const Json::Value& a, const Json::Value& b) {
+            const double av = nested_number(a, "sentencing", "starting_point_months",
+                nested_number(a, "sentencing", "final_sentence_months"));
+            const double bv = nested_number(b, "sentencing", "starting_point_months",
+                nested_number(b, "sentencing", "final_sentence_months"));
+            return av > bv;
+        });
+        Json::Value out(Json::arrayValue);
+        for (int i = 0; i < static_cast<int>(ordered.size()) && i < lim; ++i)
+            out.append(tracker_result(ordered[i], "sentencing"));
+        co_return json_response(drogon::k200OK, json_to_string(out));
+    } catch (const std::exception& e) {
+        co_return text_response(drogon::k500InternalServerError, std::string(e.what()) + "\n");
+    }
+}
+
+drogon::Task<drogon::HttpResponsePtr> nz_legal_pg_handler(
+    const drogon::HttpRequestPtr& req,
+    const astraea::Config& cfg,
+    const astraea::JurisdictionBase& jurisdiction)
+{
+    try {
+        const Json::Value in = parse_json_body(req);
+        Json::Value must(Json::arrayValue), should(Json::arrayValue);
+        must.append(match_value("pg.has_data", Json::Value(true)));
+        add_court_filter(must, in);
+        add_year_filter(must, in);
+        add_bool_match(must, in, "reinstatement", "pg.reinstatement_ordered");
+        add_range(must, in, "min_contributory", "max_contributory",
+                  "pg.contributory_conduct_pct", 0.0, 100.0);
+        add_range(must, in, "min_compensation", "max_compensation",
+                  "penalty.awarded_amount", 0.0, 999999999.0);
+        add_should_matches(should, in, "grievance_types", "pg.grievance_types");
+
+        const int lim = capped_limit(in);
+        auto points = co_await qdrant_scroll_json(
+            cfg.qdrant_url, jurisdiction.corpus().qdrant_collection,
+            make_filter(std::move(must), std::move(should)), lim * 4);
+
+        std::unordered_map<std::string, Json::Value> best;
+        std::unordered_map<std::string, Json::Value> merged;
+        for (const auto& pt : points) {
+            const auto& p = pt["payload"];
+            const std::string cid = p.get("case_id", "").asString();
+            if (cid.empty()) continue;
+            if (!best.contains(cid)) {
+                best[cid] = p;
+                merged[cid] = Json::Value(Json::objectValue);
+            } else if (pg_completeness(p) > pg_completeness(best[cid])) {
+                best[cid] = p;
+            }
+            const auto& pg = p["pg"];
+            if (pg.isObject()) {
+                for (const auto& k : pg.getMemberNames()) {
+                    if (k == "has_data") continue;
+                    if (k == "grievance_types" && pg[k].isArray()) {
+                        if (!merged[cid].isMember(k)) merged[cid][k] = Json::Value(Json::arrayValue);
+                        for (const auto& gt : pg[k]) {
+                            bool exists = false;
+                            for (const auto& existing : merged[cid][k])
+                                if (existing == gt) { exists = true; break; }
+                            if (!exists) merged[cid][k].append(gt);
+                        }
+                    } else if ((!merged[cid].isMember(k) || merged[cid][k].isNull()) && !pg[k].isNull()) {
+                        merged[cid][k] = pg[k];
+                    }
+                }
+            }
+        }
+        std::vector<Json::Value> ordered;
+        for (auto& [cid, p] : best) {
+            p["pg"] = merged[cid];
+            p["pg"]["has_data"] = true;
+            ordered.push_back(std::move(p));
+        }
+        std::sort(ordered.begin(), ordered.end(), [](const Json::Value& a, const Json::Value& b) {
+            return nested_number(a, "penalty", "awarded_amount") >
+                   nested_number(b, "penalty", "awarded_amount");
+        });
+        Json::Value out(Json::arrayValue);
+        for (int i = 0; i < static_cast<int>(ordered.size()) && i < lim; ++i)
+            out.append(tracker_result(ordered[i], "pg"));
+        co_return json_response(drogon::k200OK, json_to_string(out));
+    } catch (const std::exception& e) {
+        co_return text_response(drogon::k500InternalServerError, std::string(e.what()) + "\n");
+    }
+}
+#endif // ASTRAEA_NZ_LEGAL_APP
 
 // ---------------------------------------------------------------------------
 // RAG assembly: shared by /ask and (in 6C.3) /ask/stream.
@@ -1995,7 +2374,7 @@ void ask_stream_handler(
                     shared_stream->close();
                 });
         });
-    resp->addHeader("Content-Type",     "text/event-stream");
+    resp->setContentTypeCodeAndCustomString(drogon::CT_CUSTOM, "text/event-stream");
     resp->addHeader("Cache-Control",    "no-cache");
     resp->addHeader("X-Accel-Buffering", "no");
     resp->addHeader("X-Request-Id",     req_id);
@@ -2176,7 +2555,11 @@ int main() {
     verify_mimalloc_override();
 
     const auto cfg = astraea::Config::from_env();
+#if defined(ASTRAEA_NZ_LEGAL_APP)
+    const astraea::nz_legal::NZLegalJurisdiction jurisdiction;
+#else
     const astraea::nz_building::NZBuildingJurisdiction jurisdiction;
+#endif
 
     // Singletons that live for the lifetime of drogon::app().run() and are
     // captured by reference into the request handlers below. Constructing
@@ -2538,6 +2921,41 @@ int main() {
                                 geocode_ptr);
         }, {drogon::Post});
 
+#if defined(ASTRAEA_NZ_LEGAL_APP)
+    drogon::app().registerHandler("/notable",
+        [&cfg, &jurisdiction](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+            drogon::async_run(
+                [req, cb = std::move(cb), &cfg, &jurisdiction]() -> drogon::Task<> {
+                    auto resp = co_await nz_legal_notable_handler(req, cfg, jurisdiction);
+                    cb(resp);
+                });
+        }, {drogon::Post});
+
+    drogon::app().registerHandler("/sentencing-tracker",
+        [&cfg, &jurisdiction](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+            drogon::async_run(
+                [req, cb = std::move(cb), &cfg, &jurisdiction]() -> drogon::Task<> {
+                    auto resp = co_await nz_legal_sentencing_handler(req, cfg, jurisdiction);
+                    cb(resp);
+                });
+        }, {drogon::Post});
+
+    drogon::app().registerHandler("/pg-tracker",
+        [&cfg, &jurisdiction](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+            drogon::async_run(
+                [req, cb = std::move(cb), &cfg, &jurisdiction]() -> drogon::Task<> {
+                    auto resp = co_await nz_legal_pg_handler(req, cfg, jurisdiction);
+                    cb(resp);
+                });
+        }, {drogon::Post});
+#endif
+
     drogon::app().registerHandler("/feedback",
         [&feedback_log, &feedback_cooldown](
             const drogon::HttpRequestPtr& req,
@@ -2618,6 +3036,11 @@ int main() {
     drogon::app().registerHandler("/healthz",       options_cb, {drogon::Options});
     drogon::app().registerHandler("/ask",           options_cb, {drogon::Options});
     drogon::app().registerHandler("/ask/stream",    options_cb, {drogon::Options});
+#if defined(ASTRAEA_NZ_LEGAL_APP)
+    drogon::app().registerHandler("/notable",       options_cb, {drogon::Options});
+    drogon::app().registerHandler("/sentencing-tracker", options_cb, {drogon::Options});
+    drogon::app().registerHandler("/pg-tracker",    options_cb, {drogon::Options});
+#endif
     drogon::app().registerHandler("/zone",          options_cb, {drogon::Options});
     drogon::app().registerHandler("/feedback",      options_cb, {drogon::Options});
     drogon::app().registerHandler("/feedback/full", options_cb, {drogon::Options});
