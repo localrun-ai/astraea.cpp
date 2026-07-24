@@ -1,0 +1,1156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NZ Legal RAG</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="shortcut icon" href="/static/favicon.svg">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f4f4f5;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background: #1a1a2e;
+      color: #fff;
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+
+    header h1 { font-size: 1.1rem; font-weight: 600; }
+    header span { font-size: 0.8rem; color: #a0aec0; }
+
+    /* Tab navigation */
+    .tab-nav {
+      background: #1a1a2e;
+      border-top: 1px solid #2d2d5e;
+      display: flex;
+      flex-shrink: 0;
+      padding: 0 24px;
+    }
+
+    .tab-btn {
+      padding: 10px 20px;
+      background: none;
+      border: none;
+      color: #a0aec0;
+      font-size: 0.88rem;
+      font-family: inherit;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+    }
+
+    .tab-btn.active {
+      color: #fff;
+      border-bottom-color: #4a90d9;
+    }
+
+    .tab-btn:hover:not(.active) { color: #cbd5e0; }
+
+    /* --- ASK TAB --- */
+    #tab-ask {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .msg { display: flex; flex-direction: column; max-width: 80%; }
+    .msg.user { align-self: flex-end; align-items: flex-end; }
+    .msg.assistant { align-self: flex-start; align-items: flex-start; }
+
+    .bubble {
+      padding: 12px 16px;
+      border-radius: 16px;
+      line-height: 1.6;
+      font-size: 0.95rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .msg.user .bubble {
+      background: #1a1a2e;
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+
+    .msg.assistant .bubble {
+      background: #fff;
+      color: #1a1a2e;
+      border-bottom-left-radius: 4px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      position: relative;
+    }
+
+    .copy-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 6px;
+      color: #aaa;
+      font-size: 0.85rem;
+      line-height: 1;
+      transition: color 0.15s, background 0.15s;
+    }
+    .copy-btn:hover { color: #1a1a2e; background: #f0f0f0; }
+    .copy-btn.copied { color: #2ecc71; }
+
+    .sources {
+      margin-top: 10px;
+      font-size: 0.8rem;
+      color: #555;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .sources strong { color: #1a1a2e; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; }
+
+    .source-item a { color: #2b6cb0; text-decoration: none; }
+    .source-item a:hover { text-decoration: underline; }
+
+    .typing {
+      display: flex;
+      gap: 5px;
+      padding: 14px 18px;
+      background: #fff;
+      border-radius: 16px;
+      border-bottom-left-radius: 4px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      width: fit-content;
+    }
+
+    .typing span {
+      width: 8px; height: 8px;
+      background: #a0aec0;
+      border-radius: 50%;
+      animation: bounce 1.2s infinite;
+    }
+    .typing span:nth-child(2) { animation-delay: 0.2s; }
+    .typing span:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes bounce {
+      0%, 80%, 100% { transform: translateY(0); }
+      40% { transform: translateY(-6px); }
+    }
+
+    .disclaimer {
+      font-size: 0.75rem;
+      color: #999;
+      margin-top: 6px;
+      font-style: italic;
+    }
+
+    .trace-toggle {
+      background: none;
+      border: 1px solid #cbd5e0;
+      border-radius: 6px;
+      color: #718096;
+      font-size: 0.72rem;
+      padding: 2px 8px;
+      cursor: pointer;
+      margin-top: 8px;
+      font-family: monospace;
+    }
+    .trace-toggle:hover { background: #f7fafc; color: #2d3748; }
+
+    .trace-panel {
+      margin-top: 8px;
+      background: #1a1a2e;
+      color: #e2e8f0;
+      border-radius: 8px;
+      padding: 12px 14px;
+      font-family: monospace;
+      font-size: 0.75rem;
+      line-height: 1.7;
+    }
+    .trace-panel .t-label { color: #68d391; font-weight: bold; }
+    .trace-panel .t-warn  { color: #fc8181; }
+    .trace-panel .t-ok    { color: #68d391; }
+    .trace-panel .t-dim   { color: #718096; }
+    .conf-high   { color: #68d391; font-weight: bold; }
+    .conf-medium { color: #f6e05e; font-weight: bold; }
+    .conf-low    { color: #fc8181; font-weight: bold; }
+
+    #dev-toggle {
+      position: fixed;
+      bottom: 16px;
+      right: 16px;
+      background: #2d3748;
+      color: #e2e8f0;
+      border: none;
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-size: 0.72rem;
+      cursor: pointer;
+      font-family: monospace;
+      opacity: 0.7;
+      z-index: 999;
+    }
+    #dev-toggle:hover { opacity: 1; }
+    #dev-toggle.active { background: #2b6cb0; opacity: 1; }
+
+    #ask-footer {
+      background: #fff;
+      border-top: 1px solid #e2e8f0;
+      padding: 16px 24px;
+      flex-shrink: 0;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+
+    #filters {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+
+    #filters select, #filters input {
+      padding: 6px 10px;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      background: #f8fafc;
+      color: #333;
+    }
+
+    #filters label { font-size: 0.78rem; color: #666; align-self: center; }
+
+    textarea {
+      flex: 1;
+      padding: 12px 16px;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      font-size: 0.95rem;
+      resize: none;
+      font-family: inherit;
+      line-height: 1.5;
+      max-height: 140px;
+      overflow-y: auto;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    textarea:focus { border-color: #1a1a2e; }
+
+    button#send {
+      padding: 12px 22px;
+      background: #1a1a2e;
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: 500;
+      transition: background 0.15s;
+      white-space: nowrap;
+    }
+
+    button#send:hover { background: #2d2d5e; }
+    button#send:disabled { background: #a0aec0; cursor: not-allowed; }
+
+    .empty-state {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #a0aec0;
+      gap: 8px;
+      user-select: none;
+    }
+
+    .empty-state h2 { font-size: 1.3rem; color: #4a5568; }
+    .empty-state p { font-size: 0.88rem; max-width: 400px; text-align: center; }
+
+    .suggestions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: center;
+      margin-top: 12px;
+    }
+
+    .suggestion {
+      padding: 8px 14px;
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 20px;
+      font-size: 0.82rem;
+      color: #2b6cb0;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .suggestion:hover { background: #ebf8ff; }
+
+    /* --- NOTABLE CASES TAB --- */
+    #tab-notable {
+      display: none;
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+    }
+
+    .notable-panel {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    .notable-panel h2 {
+      font-size: 1.1rem;
+      color: #1a1a2e;
+      margin-bottom: 18px;
+    }
+
+    .filter-card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      margin-bottom: 20px;
+    }
+
+    .filter-card h3 {
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #718096;
+      margin-bottom: 12px;
+    }
+
+    .flag-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px 16px;
+      margin-bottom: 4px;
+    }
+
+    .flag-grid label {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 0.84rem;
+      color: #2d3748;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .flag-grid input[type="checkbox"] { cursor: pointer; }
+
+    .penalty-row {
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+
+    .penalty-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .penalty-group label {
+      font-size: 0.8rem;
+      color: #4a5568;
+      font-weight: 500;
+    }
+
+    .range-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .range-row input[type="number"] {
+      width: 90px;
+      padding: 6px 10px;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      font-family: inherit;
+    }
+
+    .range-row span { font-size: 0.8rem; color: #718096; }
+
+    .notable-filter-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-top: 4px;
+    }
+
+    .notable-filter-row label { font-size: 0.8rem; color: #666; }
+
+    .notable-filter-row select,
+    .notable-filter-row input[type="number"] {
+      padding: 6px 10px;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      font-family: inherit;
+    }
+
+    .btn-search {
+      margin-top: 16px;
+      padding: 10px 24px;
+      background: #1a1a2e;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-search:hover { background: #2d2d5e; }
+    .btn-search:disabled { background: #a0aec0; cursor: not-allowed; }
+
+    .btn-clear {
+      margin-top: 16px;
+      margin-left: 8px;
+      padding: 10px 16px;
+      background: none;
+      color: #718096;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      cursor: pointer;
+    }
+
+    .btn-clear:hover { background: #f7fafc; }
+
+    #notable-results { margin-top: 4px; }
+
+    .notable-empty {
+      text-align: center;
+      color: #a0aec0;
+      padding: 40px 0;
+      font-size: 0.9rem;
+    }
+
+    .notable-count {
+      font-size: 0.82rem;
+      color: #718096;
+      margin-bottom: 12px;
+    }
+
+    .notable-card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 16px 18px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+      margin-bottom: 12px;
+      border-left: 3px solid #e2e8f0;
+    }
+
+    .notable-card.criminal { border-left-color: #e53e3e; }
+    .notable-card.civil    { border-left-color: #3182ce; }
+
+    .notable-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .notable-card-title a {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #1a1a2e;
+      text-decoration: none;
+    }
+
+    .notable-card-title a:hover { text-decoration: underline; }
+
+    .notable-card-meta {
+      font-size: 0.78rem;
+      color: #718096;
+      margin-top: 2px;
+    }
+
+    .osi-badge {
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 20px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .osi-low    { background: #ebf8ff; color: #2b6cb0; }
+    .osi-mid    { background: #fef3c7; color: #b45309; }
+    .osi-high   { background: #fff5f5; color: #c53030; }
+    .osi-severe { background: #e53e3e; color: #fff; }
+
+    .penalty-line {
+      font-size: 0.82rem;
+      color: #4a5568;
+      margin-bottom: 8px;
+    }
+
+    .penalty-line strong { color: #2d3748; }
+
+    .flag-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+
+    .flag-pill {
+      font-size: 0.72rem;
+      padding: 2px 9px;
+      background: #edf2f7;
+      color: #4a5568;
+      border-radius: 12px;
+    }
+
+    .loading-dots {
+      text-align: center;
+      color: #718096;
+      padding: 30px 0;
+      font-size: 0.9rem;
+    }
+
+    /* --- TRACKER TABS (Sentencing / PG) --- */
+
+    .tracker-desc {
+      font-size: 0.84rem;
+      color: #718096;
+      margin-bottom: 18px;
+      line-height: 1.5;
+    }
+
+    .stats-box {
+      background: #ebf8ff;
+      border: 1px solid #bee3f8;
+      border-radius: 10px;
+      padding: 14px 20px;
+      margin-bottom: 16px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 24px;
+      align-items: center;
+    }
+
+    .stat-item {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .stat-label {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #2b6cb0;
+    }
+
+    .stat-value {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #1a365d;
+    }
+
+    .sent-card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 16px 18px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+      margin-bottom: 12px;
+      border-left: 3px solid #e53e3e;
+    }
+
+    .pg-card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 16px 18px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+      margin-bottom: 12px;
+      border-left: 3px solid #38a169;
+    }
+
+    .sent-card-header, .pg-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .sent-facts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 24px;
+      font-size: 0.82rem;
+      color: #4a5568;
+      margin-bottom: 8px;
+    }
+
+    .sent-fact strong { color: #2d3748; }
+
+    .badge-gp {
+      font-size: 0.75rem;
+      padding: 2px 9px;
+      border-radius: 12px;
+      font-weight: 600;
+      background: #c6f6d5;
+      color: #276749;
+    }
+
+    .badge-sentence {
+      font-size: 0.75rem;
+      padding: 2px 9px;
+      border-radius: 12px;
+      font-weight: 600;
+      background: #fff5f5;
+      color: #c53030;
+    }
+
+    .badge-reinstate {
+      font-size: 0.75rem;
+      padding: 2px 9px;
+      border-radius: 12px;
+      font-weight: 600;
+      background: #c6f6d5;
+      color: #276749;
+    }
+
+    .badge-no-reinstate {
+      font-size: 0.75rem;
+      padding: 2px 9px;
+      border-radius: 12px;
+      font-weight: 600;
+      background: #fff5f5;
+      color: #c53030;
+    }
+
+    .pg-types {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-bottom: 8px;
+    }
+
+    .pg-type-pill {
+      font-size: 0.72rem;
+      padding: 2px 9px;
+      background: #e6fffa;
+      color: #234e52;
+      border-radius: 12px;
+    }
+
+    .select-sm {
+      padding: 6px 10px;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      font-family: inherit;
+      background: #f8fafc;
+      color: #333;
+    }
+  </style>
+</head>
+<body>
+
+<div id="llm-banner" style="display:none;background:#744210;color:#fff;font-size:0.8rem;padding:8px 24px;display:none;align-items:center;gap:12px;flex-shrink:0;">
+  <span>&#9889;</span>
+  <span><strong>LLM server offline.</strong> Search and trackers are available. The Ask tab cannot generate answers until the LLM server is restarted.</span>
+</div>
+<div id="legal-banner" style="background:#7b341e;color:#fff;font-size:0.8rem;padding:8px 24px;display:flex;align-items:center;gap:12px;flex-shrink:0;">
+  <span>&#9888;</span>
+  <span><strong>Research prototype only.</strong> Not legal advice. This tool retrieves and summarises public legal sources. It is not a lawyer or law firm and must not be relied on for legal decisions. Do not enter confidential or identifying information. For advice about your situation, consult a qualified New Zealand lawyer.</span>
+  <button id="legal-banner-close" style="margin-left:auto;background:none;border:none;color:#fff;cursor:pointer;font-size:1rem;padding:0 4px;">&#x2715;</button>
+</div>
+
+<header>
+  <h1>NZ Legal RAG</h1>
+  <span>Self-hosted AI legal research prototype - all queries stay on your hardware</span>
+  <div style="margin-left:auto;display:flex;gap:12px;align-items:center;">
+    <a href="https://github.com/jwongso/astraea.cpp" target="_blank" style="color:#a0aec0;font-size:0.8rem;text-decoration:none;border:1px solid #2d2d5e;padding:4px 10px;border-radius:6px;">Powered by Astraea.cpp</a>
+    <a id="about-link" href="#" style="color:#a0aec0;font-size:0.8rem;text-decoration:none;border:1px solid #2d2d5e;padding:4px 10px;border-radius:6px;">About</a>
+  </div>
+</header>
+
+<nav class="tab-nav">
+  <button class="tab-btn active" data-tab="ask">Ask</button>
+  <button class="tab-btn" data-tab="notable">Notable Cases</button>
+  <button class="tab-btn" data-tab="sentencing">Sentencing Tracker</button>
+  <button class="tab-btn" data-tab="pg">Personal Grievance Tracker</button>
+  <button class="tab-btn" data-tab="about">About</button>
+</nav>
+
+<!-- ASK TAB -->
+<div id="tab-ask" style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
+  <div id="chat">
+    <div class="empty-state" id="empty">
+      <h2>Ask a legal question</h2>
+      <p>Searches 2.8 million+ NZ court decision chunks across 13 courts (NZHC, NZCA, NZSC, NZERA, NZEmpC, NZEnvC, NZACC, NZFC, NZTT and more) covering 1985-2026. Answers include citations to source decisions.</p>
+      <label style="display:flex;align-items:flex-start;gap:8px;margin-top:14px;font-size:0.82rem;color:#555;cursor:pointer;">
+        <input type="checkbox" id="disclaimer-ack" style="margin-top:2px;flex-shrink:0;">
+        I understand this is a research prototype, not legal advice, and I will not enter confidential or identifying information about any real person or legal matter.
+      </label>
+      <div class="suggestions" style="margin-top:14px;">
+        <div class="suggestion">Can a landlord evict for unpaid rent?</div>
+        <div class="suggestion">What is unjustified dismissal?</div>
+        <div class="suggestion">Test for granting an injunction?</div>
+        <div class="suggestion">What is the test for reasonable excuse in contempt of court?</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="ask-footer">
+    <div id="filters">
+      <label>Court:</label>
+      <select id="court">
+        <option value="">All courts</option>
+        <option value="NZSC">Supreme Court</option>
+        <option value="NZCA">Court of Appeal</option>
+        <option value="NZHC">High Court</option>
+        <option value="NZFC">Family Court</option>
+        <option value="NZEnvC">Environment Court</option>
+        <option value="NZERA">Employment Relations Authority</option>
+        <option value="NZEmpC">Employment Court</option>
+        <option value="NZACC">ACC Appeals</option>
+        <option value="NZCorC">Coroners Court</option>
+        <option value="NZHRRT">Human Rights Review Tribunal</option>
+        <option value="NZLCDT">Lawyers Disciplinary Tribunal</option>
+        <option value="NZREADT">Real Estate Agents Tribunal</option>
+        <option value="NZTT">Tenancy Tribunal</option>
+        <option value="NZLEG">Legislation</option>
+      </select>
+      <label>Year from:</label>
+      <input type="number" id="year_from" placeholder="2022" min="1960" max="2024" style="width:80px">
+      <label>to:</label>
+      <input type="number" id="year_to" placeholder="2024" min="1960" max="2024" style="width:80px">
+    </div>
+    <div class="input-row">
+      <textarea id="input" rows="1" placeholder="Ask a question about NZ law..."></textarea>
+      <button id="send">Ask</button>
+    </div>
+  </div>
+</div>
+
+<!-- NOTABLE CASES TAB -->
+<div id="tab-notable">
+  <div class="notable-panel">
+    <h2>Notable Cases</h2>
+
+    <div class="filter-card">
+      <h3>Flags (match any selected)</h3>
+      <div class="flag-grid" id="flag-checkboxes">
+        <!-- populated by JS -->
+      </div>
+    </div>
+
+    <div class="filter-card">
+      <h3>Penalty severity</h3>
+      <div class="penalty-row">
+        <div class="penalty-group">
+          <label>Criminal - OSI range (0.0 = discharge, 1.0 = life without parole)</label>
+          <div class="range-row">
+            <input type="number" id="min_osi" placeholder="min" step="0.05" min="0" max="1">
+            <span>to</span>
+            <input type="number" id="max_osi" placeholder="max" step="0.05" min="0" max="1">
+          </div>
+        </div>
+        <div class="penalty-group">
+          <label>Civil - awarded amount ($)</label>
+          <div class="range-row">
+            <input type="number" id="min_awarded" placeholder="min" step="1000" min="0">
+            <span>to</span>
+            <input type="number" id="max_awarded" placeholder="max" step="1000" min="0">
+          </div>
+        </div>
+        <div class="penalty-group">
+          <label>Civil - recovery rate (1.0 = full claim, &gt;1.0 = exemplary damages)</label>
+          <div class="range-row">
+            <input type="number" id="min_recovery" placeholder="min" step="0.1" min="0">
+            <span>to</span>
+            <input type="number" id="max_recovery" placeholder="max" step="0.1" min="0">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="filter-card">
+      <h3>Court and date</h3>
+      <div class="notable-filter-row">
+        <label>Court:</label>
+        <select id="notable_court">
+          <option value="">All courts</option>
+          <option value="NZSC">Supreme Court</option>
+          <option value="NZCA">Court of Appeal</option>
+          <option value="NZHC">High Court</option>
+          <option value="NZFC">Family Court</option>
+          <option value="NZEnvC">Environment Court</option>
+          <option value="NZERA">Employment Relations Authority</option>
+          <option value="NZEmpC">Employment Court</option>
+          <option value="NZACC">ACC Appeals</option>
+          <option value="NZCorC">Coroners Court</option>
+          <option value="NZHRRT">Human Rights Review Tribunal</option>
+          <option value="NZLCDT">Lawyers Disciplinary Tribunal</option>
+          <option value="NZREADT">Real Estate Agents Tribunal</option>
+          <option value="NZTT">Tenancy Tribunal</option>
+        </select>
+        <label>Year from:</label>
+        <input type="number" id="notable_year_from" placeholder="2022" min="1960" max="2024" style="width:80px">
+        <label>to:</label>
+        <input type="number" id="notable_year_to" placeholder="2024" min="1960" max="2024" style="width:80px">
+      </div>
+      <div style="margin-top:12px">
+        <button class="btn-search" id="notable-search-btn">Search Notable Cases</button>
+        <button class="btn-clear">Clear</button>
+      </div>
+    </div>
+
+    <div class="filter-card">
+      <h3>Counsel</h3>
+      <div class="notable-filter-row" style="flex-wrap:wrap;gap:16px;">
+        <div style="display:flex;flex-direction:column;gap:5px;">
+          <label style="font-size:0.8rem;color:#4a5568;font-weight:500;">Any counsel (surname)</label>
+          <input type="text" id="counsel_surname" placeholder="e.g. Armstrong"
+                 style="padding:6px 10px;border:1px solid #e2e8f0;border-radius:8px;font-size:0.83rem;font-family:inherit;width:200px;">
+        </div>
+        <div style="display:flex;flex-direction:column;gap:5px;">
+          <label style="font-size:0.8rem;color:#4a5568;font-weight:500;">Crown / prosecution counsel (full name as listed)</label>
+          <input type="text" id="crown_counsel" placeholder="e.g. M Harborow"
+                 style="padding:6px 10px;border:1px solid #e2e8f0;border-radius:8px;font-size:0.83rem;font-family:inherit;width:240px;">
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <button class="btn-search">Search</button>
+        <button class="btn-clear">Clear</button>
+      </div>
+    </div>
+
+    <div id="notable-results">
+      <div class="notable-empty">Select one or more filters above then click Search.</div>
+    </div>
+  </div>
+</div>
+
+<!-- SENTENCING TRACKER TAB -->
+<div id="tab-sentencing" style="display:none;flex:1;overflow-y:auto;padding:24px;">
+  <div class="notable-panel">
+    <h2>Sentencing Tracker</h2>
+    <p class="tracker-desc">Criminal sentencing factors from NZHC, NZCA and NZSC decisions. Comparable to Westlaw NZ Sentencing Tracker. Includes starting point, final sentence, guilty plea discount and more.</p>
+
+    <div class="filter-card">
+      <h3>Offence flags (match any selected)</h3>
+      <div class="flag-grid">
+        <label><input type="checkbox" value="self_defence"              class="sent-flag-cb"> Self-defence</label>
+        <label><input type="checkbox" value="provocation"               class="sent-flag-cb"> Provocation</label>
+        <label><input type="checkbox" value="diminished_responsibility" class="sent-flag-cb"> Diminished responsibility</label>
+        <label><input type="checkbox" value="necessity"                 class="sent-flag-cb"> Necessity defence</label>
+        <label><input type="checkbox" value="duress"                    class="sent-flag-cb"> Duress</label>
+        <label><input type="checkbox" value="mental_health"             class="sent-flag-cb"> Mental health</label>
+        <label><input type="checkbox" value="intoxication"              class="sent-flag-cb"> Intoxication</label>
+        <label><input type="checkbox" value="youth"                     class="sent-flag-cb"> Youth / young person</label>
+        <label><input type="checkbox" value="tikanga_maori"             class="sent-flag-cb"> Tikanga Maori</label>
+        <label><input type="checkbox" value="cultural_factors"          class="sent-flag-cb"> Cultural factors</label>
+        <label><input type="checkbox" value="novel_argument"            class="sent-flag-cb"> Novel legal argument</label>
+        <label><input type="checkbox" value="jurisdictional_challenge"  class="sent-flag-cb"> Jurisdictional challenge</label>
+        <label><input type="checkbox" value="suppressed_identity"       class="sent-flag-cb"> Suppressed identity</label>
+        <label><input type="checkbox" value="lack_of_motive"            class="sent-flag-cb"> Lack of motive</label>
+      </div>
+    </div>
+
+    <div class="filter-card">
+      <h3>Sentence details</h3>
+      <div class="penalty-row">
+        <div class="penalty-group">
+          <label>Sentence type</label>
+          <select class="select-sm" id="sent_type">
+            <option value="">Any</option>
+            <option value="imprisonment">Imprisonment</option>
+            <option value="home_detention">Home detention</option>
+            <option value="community_work">Community work</option>
+            <option value="fine">Fine only</option>
+            <option value="supervision">Supervision</option>
+          </select>
+        </div>
+        <div class="penalty-group">
+          <label>Starting point (months)</label>
+          <div class="range-row">
+            <input type="number" id="sent_min_sp" placeholder="min" min="0" step="6">
+            <span>to</span>
+            <input type="number" id="sent_max_sp" placeholder="max" min="0" step="6">
+          </div>
+        </div>
+        <div class="penalty-group">
+          <label>Final sentence (months)</label>
+          <div class="range-row">
+            <input type="number" id="sent_min_fs" placeholder="min" min="0" step="6">
+            <span>to</span>
+            <input type="number" id="sent_max_fs" placeholder="max" min="0" step="6">
+          </div>
+        </div>
+        <div class="penalty-group">
+          <label>Guilty plea</label>
+          <select class="select-sm" id="sent_gp">
+            <option value="">Any</option>
+            <option value="yes">Yes (guilty plea)</option>
+            <option value="no">No</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="filter-card">
+      <h3>Court and date</h3>
+      <div class="notable-filter-row">
+        <label>Court:</label>
+        <select class="select-sm" id="sent_court">
+          <option value="">All criminal courts</option>
+          <option value="NZSC">Supreme Court</option>
+          <option value="NZCA">Court of Appeal</option>
+          <option value="NZHC">High Court</option>
+        </select>
+        <label>Year from:</label>
+        <input type="number" id="sent_year_from" placeholder="2022" min="1960" max="2024" style="width:80px;" class="select-sm">
+        <label>to:</label>
+        <input type="number" id="sent_year_to" placeholder="2024" min="1960" max="2024" style="width:80px;" class="select-sm">
+      </div>
+      <div style="margin-top:12px">
+        <button class="btn-search" id="sent-search-btn">Search Sentencing Tracker</button>
+        <button class="btn-clear">Clear</button>
+      </div>
+    </div>
+
+    <div id="sentencing-results">
+      <div class="notable-empty">Select filters above then click Search.</div>
+    </div>
+  </div>
+</div>
+
+<!-- PG TRACKER TAB -->
+<div id="tab-pg" style="display:none;flex:1;overflow-y:auto;padding:24px;">
+  <div class="notable-panel">
+    <h2>Personal Grievance Tracker</h2>
+    <p class="tracker-desc">Employment Relations Authority and Employment Court personal grievance outcomes. Comparable to Westlaw NZ Personal Grievance Tracker. Filter by grievance type, reinstatement, compensation and contributory conduct.</p>
+
+    <div class="filter-card">
+      <h3>Grievance type (match any selected)</h3>
+      <div class="flag-grid">
+        <label><input type="checkbox" value="unjustified_dismissal" class="pg-type-cb"> Unjustified dismissal</label>
+        <label><input type="checkbox" value="constructive_dismissal" class="pg-type-cb"> Constructive dismissal</label>
+        <label><input type="checkbox" value="disadvantage" class="pg-type-cb"> Disadvantage / good faith breach</label>
+        <label><input type="checkbox" value="harassment" class="pg-type-cb"> Harassment</label>
+        <label><input type="checkbox" value="discrimination" class="pg-type-cb"> Discrimination</label>
+        <label><input type="checkbox" value="unjustified_action" class="pg-type-cb"> Unjustified action</label>
+      </div>
+    </div>
+
+    <div class="filter-card">
+      <h3>Outcome filters</h3>
+      <div class="penalty-row">
+        <div class="penalty-group">
+          <label>Reinstatement</label>
+          <select class="select-sm" id="pg_reinstatement">
+            <option value="">Any</option>
+            <option value="yes">Ordered</option>
+            <option value="no">Declined / not ordered</option>
+          </select>
+        </div>
+        <div class="penalty-group">
+          <label>Contributory conduct (%)</label>
+          <div class="range-row">
+            <input type="number" id="pg_min_contrib" placeholder="min" min="0" max="100" step="5">
+            <span>to</span>
+            <input type="number" id="pg_max_contrib" placeholder="max" min="0" max="100" step="5">
+          </div>
+        </div>
+        <div class="penalty-group">
+          <label>Compensation awarded ($)</label>
+          <div class="range-row">
+            <input type="number" id="pg_min_comp" placeholder="min" min="0" step="1000">
+            <span>to</span>
+            <input type="number" id="pg_max_comp" placeholder="max" min="0" step="1000">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="filter-card">
+      <h3>Court and date</h3>
+      <div class="notable-filter-row">
+        <label>Court:</label>
+        <select class="select-sm" id="pg_court">
+          <option value="">ERA and Employment Court</option>
+          <option value="NZERA">Employment Relations Authority</option>
+          <option value="NZEmpC">Employment Court</option>
+        </select>
+        <label>Year from:</label>
+        <input type="number" id="pg_year_from" placeholder="2022" min="1960" max="2024" style="width:80px;" class="select-sm">
+        <label>to:</label>
+        <input type="number" id="pg_year_to" placeholder="2024" min="1960" max="2024" style="width:80px;" class="select-sm">
+      </div>
+      <div style="margin-top:12px">
+        <button class="btn-search" id="pg-search-btn">Search</button>
+        <button class="btn-clear">Clear</button>
+      </div>
+    </div>
+
+    <div id="pg-results">
+      <div class="notable-empty">Select filters above then click Search.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ABOUT TAB -->
+<div id="tab-about" style="display:none;flex:1;overflow-y:auto;padding:32px 24px;">
+  <div style="max-width:860px;margin:0 auto;">
+
+    <h2 style="font-size:1.3rem;color:#1a1a2e;margin-bottom:8px;">NZ Legal RAG</h2>
+    <p style="color:#555;margin-bottom:24px;">A self-hosted AI legal research prototype for New Zealand public legal sources, powered by Astraea.cpp for privacy-preserving RAG, structured legal retrieval, and citation-grounded generation.</p>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:32px;">
+      <div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,0.08);text-align:center;">
+        <div style="font-size:1.6rem;font-weight:700;color:#1a1a2e;">2.8M+</div>
+        <div style="font-size:0.8rem;color:#666;">decision chunks indexed</div>
+      </div>
+      <div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,0.08);text-align:center;">
+        <div style="font-size:1.6rem;font-weight:700;color:#1a1a2e;">13</div>
+        <div style="font-size:0.8rem;color:#666;">NZ courts and tribunals</div>
+      </div>
+      <div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,0.08);text-align:center;">
+        <div style="font-size:1.6rem;font-weight:700;color:#1a1a2e;">1985-2026</div>
+        <div style="font-size:0.8rem;color:#666;">coverage (NZCA full history)</div>
+      </div>
+      <div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,0.08);text-align:center;">
+        <div style="font-size:1.6rem;font-weight:700;color:#1a1a2e;">&lt;1s</div>
+        <div style="font-size:0.8rem;color:#666;">retrieval latency</div>
+      </div>
+      <div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,0.08);text-align:center;">
+        <div style="font-size:1.6rem;font-weight:700;color:#1a1a2e;">100%</div>
+        <div style="font-size:0.8rem;color:#666;">relevant Hit@5 (30-query benchmark)</div>
+      </div>
+    </div>
+
+    <h3 style="font-size:1rem;color:#1a1a2e;margin-bottom:10px;">What this demonstrates</h3>
+    <p style="color:#555;margin-bottom:8px;">An on-premise RAG architecture for privacy-sensitive legal workflows, where data residency, legal professional privilege, and operational control are important design constraints.</p>
+    <ul style="color:#555;margin-bottom:24px;list-style:none;padding:0;display:flex;flex-direction:column;gap:6px;">
+      <li>⚙️ <strong>Astraea.cpp</strong> &mdash; C++ REST API, SSE streaming, request queue, and jurisdiction-specific tracker endpoints</li>
+      <li>🦙 <strong>llama.cpp</strong> &mdash; local Qwen-class LLM inference on Apple Silicon</li>
+      <li>🔥 <strong>Python ingestion jobs</strong> &mdash; embeddings, corpus indexing, and structured payload backfills for sentencing, PG, counsel, flags, and penalties</li>
+      <li>🐘 <strong>PostgreSQL</strong> &mdash; structured metadata and offline corpus management</li>
+      <li>🎯 <strong>Qdrant</strong> &mdash; vector index and structured payload filters across 2.8 M+ chunks and 13 NZ courts/tribunals</li>
+      <li>🔴 <strong>Redis</strong> &mdash; session and coordination support</li>
+      <li>☁️ <strong>Cloudflare Tunnel</strong> &mdash; zero-trust public access, no open ports</li>
+    </ul>
+
+    <h3 style="font-size:1rem;color:#1a1a2e;margin-bottom:10px;">Architecture</h3>
+    <pre style="background:#1a1a2e;color:#e2e8f0;padding:16px;border-radius:10px;font-size:0.8rem;overflow-x:auto;margin-bottom:24px;">Ingestion pipeline:
+  NZLII / legislation sources
+    -> HTML/PDF parsing + PDF fallback for pre-2000 scanned decisions
+    -> metadata extraction (court, year, parties, citations)
+    -> section-aware chunking (120-word windows)
+    -> sentence-transformer embeddings (nomic-embed-text-v1.5 / Qwen3-Embedding-0.6B,
+       selected per deployed embedding service)
+    -> Qdrant vector index (deterministic UUID5 point IDs, idempotent)
+    -> PostgreSQL relational store (documents, chunks, sentencing_cases,
+       employment_cases - structured metadata for offline maintenance)
+    -> structured payload backfills for sentencing, personal grievance,
+       counsel, flags, and penalties
+
+Query pipeline:
+  User question
+    -> Astraea.cpp C++ API receives /ask, /ask/stream, and tracker requests
+    -> heuristic court planner (no LLM): detects jurisdiction from domain
+       signals - criminal/NZCA+NZHC, employment/NZERA, tenancy/NZTT, ACC,
+       human rights/NZHRRT, statute sections/NZLEG. Extracts year from
+       temporal phrases. Benchmarked: achieves oracle-equivalent quality.
+    -> Qdrant structured filters narrow candidates by court, year, offence flag,
+       grievance type, sentencing factor, or PG outcome
+    -> Qdrant semantic search within filtered candidate set for free-text RAG
+    -> intent-aware legal ranker: four profiles - authority (court hierarchy
+       + citation density), example (recency boost), tracker (structured
+       payload bonus), statute (legislation-first weighting). MRR +37% vs
+       unranked baseline, zero coverage regressions.
+    -> context assembly + local LLM generation through llama.cpp-compatible
+       OpenAI endpoints
+    -> citation verifier (regex, no extra LLM call)
+    -> citation-backed answer with source URLs</pre>
+
+    <h3 style="font-size:1rem;color:#1a1a2e;margin-bottom:10px;">Example query</h3>
+    <div style="background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,0.08);margin-bottom:24px;">
+      <div style="font-size:0.85rem;color:#666;margin-bottom:6px;">Query</div>
+      <div style="font-weight:500;color:#1a1a2e;margin-bottom:12px;">"What are the key principles for unjustified dismissal in NZ employment law?"</div>
+      <div style="font-size:0.85rem;color:#666;margin-bottom:6px;">How it works</div>
+      <div style="font-size:0.85rem;color:#555;">The court planner detects "employment" and routes to NZERA + NZEmpC. PostgreSQL filters to those courts, Qdrant ranks by vector similarity, and the intent-aware legal ranker applies the authority profile (court hierarchy + citation density). The top passages are assembled and the LLM generates an answer - each claim linked to a source decision with court, date, and citation.</div>
+    </div>
+
+    <h3 style="font-size:1rem;color:#1a1a2e;margin-bottom:10px;">Structured trackers</h3>
+    <p style="color:#555;margin-bottom:24px;">Beyond free-text RAG, the system extracts structured fields at ingest/backfill time via regex and local processing, storing them in Qdrant payloads consumed directly by Astraea.cpp tracker endpoints - comparable to Westlaw NZ tracker products but fully on-premise:</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:24px;">
+      <div style="background:#fff;border-radius:10px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.08);">
+        <div style="font-weight:600;color:#1a1a2e;margin-bottom:4px;">Sentencing Tracker</div>
+        <div style="font-size:0.82rem;color:#555;">Starting point, final sentence, guilty plea discount, home detention, offence flags - across NZHC, NZCA, NZSC decisions.</div>
+      </div>
+      <div style="background:#fff;border-radius:10px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.08);">
+        <div style="font-weight:600;color:#1a1a2e;margin-bottom:4px;">Personal Grievance Tracker</div>
+        <div style="font-size:0.82rem;color:#555;">Grievance type, reinstatement outcome, contributory conduct, compensation - across ERA and Employment Court decisions.</div>
+      </div>
+    </div>
+
+    <h3 style="font-size:1rem;color:#1a1a2e;margin-bottom:10px;">Known limitations</h3>
+    <ul style="color:#555;font-size:0.88rem;padding-left:20px;margin-bottom:24px;line-height:1.8;">
+      <li>NZCA is indexed 1985-2026 (full history). All other courts cover 1996-2021 or 2000-2021. 2022-2024 is present for all courts via earlier partial ingestion.</li>
+      <li>Pre-2000 decisions sourced from scanned PDFs - OCR quality varies.</li>
+      <li>Answers depend on source availability and chunking quality; some complex multi-issue cases may be under-represented.</li>
+      <li>Research prototype only - not a replacement for professional legal advice.</li>
+    </ul>
+
+    <div style="display:flex;gap:12px;flex-wrap:wrap;">
+      <a href="https://github.com/jwongso/astraea.cpp" target="_blank" style="background:#1a1a2e;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-size:0.88rem;">Powered by Astraea.cpp</a>
+      <a href="https://github.com/jwongso/astraea.cpp#readme" target="_blank" style="background:#fff;color:#1a1a2e;padding:10px 20px;border-radius:8px;text-decoration:none;font-size:0.88rem;border:1px solid #ddd;">README</a>
+    </div>
+
+    <p style="margin-top:24px;font-size:0.78rem;color:#999;">Research prototype only. This tool summarizes public legal sources and does not provide legal advice. Consult a qualified NZ lawyer for your specific situation.</p>
+
+  </div>
+</div>
+
+
+<button id="dev-toggle" title="Toggle developer trace mode">DEV</button>
+
+<script src="/static/app.js?v=6"></script>
+</body>
+</html>

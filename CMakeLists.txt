@@ -15,26 +15,35 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # ---------------------------------------------------------------------------
-# Release: optimise for production (Ryzen AI 9 HX 370 / Zen 5 = znver5).
-#   -march=znver5               full AVX-512 + VNNI + BF16 available on this CPU
+# Release: optimise for production.
 #   -flto=thin                  Clang thin-LTO; cross-TU inlining + dead-strip
+#
+# Linux x86_64 (Ryzen AI 9 HX 370 / Zen 5 = znver5, ELF/ld.bfd):
+#   -march=znver5               full AVX-512 + VNNI + BF16 available on this CPU
 #   -fno-plt                    eliminate PLT indirection on every shared-lib call
 #   -Wl,-z,now                  eager binding (required by -fno-plt), no lazy PLT
 #   -Wl,-z,relro                full RELRO: GOT write-protected after startup
 #   Use -march=native only for local benchmarking, never in a committed config.
 #
+# macOS arm64 (Apple Silicon, Mach-O/ld64):
+#   -mcpu=apple-m4               tuned for M4 family; ld64 has no PLT/RELRO flags
+#
 # ASTRAEA_NATIVE_OPTS gates these so CI runs (Intel / generic x86-64) and
-# any other machine can build Release without znver5-specific codegen.
+# any other machine can build Release without machine-specific codegen.
 # ---------------------------------------------------------------------------
 add_compile_options($<$<CONFIG:Release>:-O3>)
 
-option(ASTRAEA_NATIVE_OPTS "Apply -march=znver5 and -flto=thin in Release builds" ON)
+option(ASTRAEA_NATIVE_OPTS "Apply machine-specific codegen and -flto=thin in Release builds" ON)
 if(ASTRAEA_NATIVE_OPTS)
     add_compile_options($<$<CONFIG:Release>:-flto=thin>)
-    add_compile_options($<$<CONFIG:Release>:-march=znver5>)
-    add_compile_options($<$<CONFIG:Release>:-fno-plt>)
     add_link_options($<$<CONFIG:Release>:-flto=thin>)
-    add_link_options($<$<CONFIG:Release>:-Wl,-z,now,-z,relro>)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+        add_compile_options($<$<CONFIG:Release>:-mcpu=apple-m4>)
+    else()
+        add_compile_options($<$<CONFIG:Release>:-march=znver5>)
+        add_compile_options($<$<CONFIG:Release>:-fno-plt>)
+        add_link_options($<$<CONFIG:Release>:-Wl,-z,now,-z,relro>)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -116,9 +125,17 @@ option(ASTRAEA_BUILD_CLIENTS "Build the HTTP client library and pull in Drogon +
 if(ASTRAEA_BUILD_CLIENTS)
     find_package(hiredis CONFIG QUIET)
     if(NOT hiredis_FOUND)
+        # pkg_check_modules(... IMPORTED_TARGET) does not reliably propagate
+        # its -L search path through a static-lib link chain (astraea_clients
+        # -> final executable), producing a bare -lhiredis with no matching
+        # -L and a link failure. find_library() resolves an absolute path
+        # instead, sidestepping the propagation issue entirely.
         find_package(PkgConfig REQUIRED)
-        pkg_check_modules(HIREDIS REQUIRED IMPORTED_TARGET hiredis)
-        add_library(hiredis::hiredis ALIAS PkgConfig::HIREDIS)
+        pkg_check_modules(HIREDIS REQUIRED hiredis)
+        find_library(HIREDIS_LIBRARY NAMES hiredis HINTS ${HIREDIS_LIBRARY_DIRS})
+        add_library(hiredis::hiredis INTERFACE IMPORTED)
+        target_link_libraries(hiredis::hiredis INTERFACE ${HIREDIS_LIBRARY})
+        target_include_directories(hiredis::hiredis INTERFACE ${HIREDIS_INCLUDE_DIRS})
     endif()
 
     CPMAddPackage(
@@ -130,6 +147,17 @@ if(ASTRAEA_BUILD_CLIENTS)
             "BUILD_CTL OFF"
             "BUILD_TESTING OFF"
             "BUILD_DROGON_SHARED OFF"
+            # astraea uses its own hiredis_runtime.cpp, never Drogon's bundled
+            # nosql redis client. Leaving BUILD_REDIS at its default (ON) makes
+            # Drogon link hiredis itself, which leaks a bare -lhiredis (no -L)
+            # into every consumer's link line via static-lib propagation.
+            "BUILD_REDIS OFF"
+        # drogon v1.9.7's RequestStream.h uses std::exception_ptr without
+        # including <exception>. libstdc++ (Linux) pulls it in transitively;
+        # libc++ (macOS/Apple Clang) does not, so this fails outright there.
+        # A CMake script (not sed) so it behaves identically on GNU sed
+        # (Linux) and BSD sed (macOS) hosts, which disagree on \n handling.
+        PATCH_COMMAND ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/patch_drogon_request_stream.cmake
     )
     # Mark Drogon as a SYSTEM library (CMake 3.25+) so its headers do not
     # trigger warnings in our TUs. Cleaner than enumerating include dirs.
